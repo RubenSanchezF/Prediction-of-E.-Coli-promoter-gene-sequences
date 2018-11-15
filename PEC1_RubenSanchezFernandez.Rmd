@@ -1,0 +1,286 @@
+---
+title: "Prediction of E. Coli promoter gene sequences" 
+author: "Rubén Sánchez Fernández"
+lang: en # language,  en: english (default), es: español, ca: catalan, ...
+date: '`r format(Sys.Date(),"%d, %B, %Y")`'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+  html_document:
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+bibliography: bibliography.bib
+---
+
+```{r setup, include=FALSE}
+# knitr options
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r libraries, include=FALSE}
+# Install packages
+# Load packages
+# ...
+
+library(knitr)
+library(class) #k-nn function
+library(caret) #confusion matrix
+```
+
+
+```{r input, include=FALSE}
+# Input / Output variables
+# Tuning parameters
+# ...
+file1 <- "promoterDataSet.csv"
+
+```
+
+
+
+##Introduction
+
+This report aims to introduce one of the simplest machine learning algorithms, the k-Nearest Neighbors. k-NN is a supervised, non-parametric method used both for classification and regression. It's simplicity and efectiveness makes it one of the widest used ML algorithms.
+
+
+##K-NN algorithm
+
+K-NN method is based on distance measure. Each unlabeled point is classified according to which class has the highest frequency from the _k_ nearest points. When performing regression, the output is the mean or median from the _k_ nearest points.    
+
+
+[@lantz2015machine] summarized the strengths and weaknesses of this algorithm:
+
+
+Strengths                        | Weaknesses
+---------------------------------|-------------------------------------------
+·Simple and effective            |·Does not produce a model, limiting the ability to understand how the features are related to the class
+·Makes no assumptions about the underlying data distribution    |·Requires selection of an appropiate _k_
+·Fast training phase             |·Slow classification phase
+-                                |·Nominal features and missing data require additional processing
+
+As previously mentioned, k-NN measures 'similarity' by calculating the distance between points. There are several distance measures that can be implemented with k-NN, being __Euclidean distance__ the more popular.
+
+Eucliden distance is calculated following the next equation:
+
+$dist(p,q) = \sqrt{ (p_1-q_1)^2 + (p_2-q_2)^2 + ... + (p_n-q_n)^2 }$
+
+Where _p_ and _q_ are the two samples and _n_ is the feature. Therefore, $p_1$ is the point of the sample _p_ on the first feature, and $p_n$ is the point of sample _p_ on the last feature.
+
+                                 
+##Example: E.coli promoter gene sequence prediction with k-NN
+
+Let's use the k-NN algorithm to predict if a gene sequence is a promoter sequence of _Escherichia coli_ [@harley1987analysis].    
+
+We will solve this exercise following a 5 step process:
+
+* __Step 1__: Collecting data
+* __Step 2__: Exploring and preparing the data
+* __Step 3__: Training a model on the data
+* __Step 4__: Evaluating model performance
+* __Step 5__: Improving model performance
+
+### Step 1: Collecting data
+
+We will use the "Molecular Biology (Promoter Gene Sequences) Data Set" which can be downloaded from the [UCI Machine Learning repository](https://archive.ics.uci.edu/ml/datasets/Molecular+Biology+(Promoter+Gene+Sequences)). The file downloaded is a _csv_ file that can be easily imported to R using the _read.csv()_ function.
+
+```{r code0}
+#importing data
+data<-read.csv(file1, header = FALSE)
+```
+
+### Step 2: Exploring and preparing the data
+
+```{r code1}
+#internal structure of dataset
+str(data)
+```
+
+The dataset is structured as a dataframe of 106 observations and 3 variables. The first variable is the response variable, indicating if the sequence is promoter (+) or not (-). The second variable is the sequence ID and the third variable is the sequence. For convenience, let's name each variable:
+
+```{r code2}
+#naming the variables
+colnames(data) <- c("promoter","name","sequence")
+#show first rows of the dataset
+head(data)
+```
+
+#### One-hot encoding
+
+Only the _sequence_ variable will be used to train the classification model. But we can't use the raw sequence to train the model, first we need to convert each nucleotide (A,T,C,G) inside the sequences to a number. In this case, the best approach is to use _one-hot encoding_, where each nucleotide is transformed to a 4-bit vector. The transformation goes as:
+
+$A = [1,0,0,0]$
+
+$C = [0,1,0,0]$
+
+$G = [0,0,1,0]$
+
+$T = [0,0,0,1]$   
+
+
+```{r code3}
+# ONE-HOT ENCODING FUNCTION FOR GENOMIC SEQUENCES
+# Author: Rubén Sánchez Fernández
+
+one_hot <- function(data, column_name){
+  
+  #creating an empty list to save the encoded sequences
+  ls <- list()
+  #going through each sequence
+  for (n_seq in 1:nrow(data)) {
+    
+    #converting to string
+    x <- as.character(data[n_seq, column_name])
+    
+    #accessing to each character inside the sequence
+    x_split <- strsplit(x, "")[[1]]
+    
+    #sequence length
+    n <- length(nchar(x_split))
+    
+    #empty matrix
+    m1 <- matrix(nrow = n, ncol = 4)
+    
+    #going through each character and assigning the binary vectors
+    for (i in 1:n){
+      if (x_split[i] == "a"){
+        m1[i,] = c(1,0,0,0)}
+      if (x_split[i] == "c"){
+        m1[i,] = c(0,1,0,0)}
+      if (x_split[i] == "g"){
+        m1[i,] = c(0,0,1,0)}
+      if(x_split[i] == "t"){
+        m1[i,] = c(0,0,0,1)}
+    }
+    #adding each encoded sequence into the list
+    ls[[n_seq]] <- m1
+  }
+
+  #we're going to save the sequences also as a dataframe to input them in the ML algorithm
+  df <- matrix(nrow = length(ls), ncol = n*4)
+  
+  for (i in 1:length(ls)){
+    df[i,] <- as.vector(t(ls[[i]])) #transposing and converting to vector each sequence
+  }
+  df <- as.data.frame(df) #coverting to df
+  
+  #storing list with enc. sequences and dataframe with enc.sequences
+  results <- list(ls, df)
+  names(results) <- c("List encoded sequences", "Dataframe encoded sequences")
+  
+  return(results)}
+```
+
+We created a function to perform one-hot encoding. Now, we just have to call it.
+
+```{r code4}
+#encoding dna sequences
+enc_seq <- one_hot(data, "sequence")
+```
+
+Let's check the first sequence.
+
+```{r code5}
+enc_seq$`List encoded sequences`[[1]]
+```
+
+#### Creating training and test subsets
+
+Now, we have to split the data in two subsets: training and test. The training set will have the 67% of the data, random separated, and the rest will go to the test set.
+
+```{r code6}
+#We will work with the encoded sequences saved as [106,228]: 1 full sequence per row 
+#(knn function requires data to be in matrix or data frame form)
+enc_seq_df <- enc_seq$`Dataframe encoded sequences` 
+
+#randomly separating data into training and test sets
+# 67% training
+size <- floor(0.67 * nrow(data))
+
+#set seed to assure reproducibility
+set.seed(123)
+
+#training indices
+trn <- sample(seq_len(nrow(data)), size = size)
+
+#training sequences
+train <- enc_seq$`Dataframe encoded sequences`[trn,]
+
+#training labels
+train_labels <- data[trn,1] 
+
+#test sequences
+test <- enc_seq$`Dataframe encoded sequences`[-trn,]
+
+#test labels
+test_labels <- data[-trn,1] 
+```
+
+### Step 3: Training a model on the data
+
+K-NN is what we call a _lazy learner_, training phase only consists in storing the input data in a structured format, which is already done.
+Now, we can classify the test data using the _knn()_ function from the _class_ package. In this case, we will start using k = 3.
+
+```{r code7}
+#k = 3
+prediction<-knn(train=train, test=test, cl=train_labels, k=3) 
+summary(prediction)
+```
+
+We obtained a vector with the predicted labels. In the next step, we will asess how true are this predictions and therefore, how accurate is the model. 
+
+### Step 4: Evaluating model performance
+
+With the _confusionMatrix()_ function of the _caret_ package we can obtain the confusion matrix and also other performance measures with just one line of code.
+
+```{r code 8}
+confusionMatrix(prediction, test_labels, positive = "+")
+```
+
+The number of false positive (FP) is 9 and the the number of false negative (FN) is 1. The accuracy of this model is 0.7143, therefore the error rate is 0.2857.
+
+### Step 5: Improving model performance
+
+We will try to improve the model performance by changing the k value. 
+
+```{r code 9}
+#k = 5
+prediction<-knn(train=train, test=test, cl=train_labels, k=5) 
+#confusion matrix
+confusionMatrix(prediction, test_labels, positive = "+")
+```
+
+
+
+```{r code 10}
+#k = 7
+prediction<-knn(train=train, test=test, cl=train_labels, k=7) 
+#confusion matrix
+confusionMatrix(prediction, test_labels, positive = "+")
+```
+
+
+
+```{r code 11}
+#k=11
+prediction<-knn(train=train, test=test, cl=train_labels, k=11) 
+#confusion matrix
+confusionMatrix(prediction, test_labels, positive = "+")
+```
+
+
+
+The results are summarized in the next table:
+
+k value   | False negatives | False positives | Percent classified incorrectly
+----------|-----------------|-----------------|--------------------------------
+3         |1                |9                |28.57%
+5         |1                |13               |40%
+7         |1                |11               |34.29%
+11        |0                |11               |31.43%
+
+The best performance is obtained with k = 3 and k = 11. With k = 3, we managed to get the lowest error rate, 28.57%. With k = 11, we got 31.43% of error rate, but 0 false negatives. Choosing between these two models would depend on how important is sensitivity for us. If we want the model with the highest sensitivity possible, we would choose k = 11, in which we obtained a 100% of sensitivity. If having perfect sensitivity is not important for us, we would choose k = 3, in which we obtained worst sensitivity (93.75%) but better specificity and better classification performance overall.
+
+## Bibiliography
